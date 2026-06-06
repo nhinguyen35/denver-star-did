@@ -1,0 +1,655 @@
+---
+title: "Denver STAR Program: Neighborhood-Level Difference-in-Differences"
+subtitle: "MGT 159T — Final Project"
+date: today
+format:
+  pdf:
+    toc: true
+    number-sections: true
+    fig-pos: "H"
+    geometry: margin=1in
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(broom)
+```
+
+# Section 1: Describe the Raw Data
+
+```{r}
+#| label: load-data
+#| include: false
+
+# ----- DROPBOX LINK -----------------------------------------------------------
+# Upload crime.csv to Dropbox, copy the share link, change ?dl=0 to ?dl=1,
+# and paste it below.
+dropbox_url <- "https://www.dropbox.com/scl/fi/mv53cxbuh157tumpx39s2/crime.csv?rlkey=q86k70ole8xkv6j9fe35walkt&st=uhlsatnl&dl=1"
+# ------------------------------------------------------------------------------
+
+crime_raw <- read_csv(
+  dropbox_url,
+  locale = locale(encoding = "latin1"),
+  show_col_types = FALSE
+)
+
+crime <- crime_raw |>
+  mutate(
+    first_occurrence_date = mdy_hms(first_occurrence_date),
+    reported_date         = mdy_hms(reported_date),
+    last_occurrence_date  = mdy_hms(last_occurrence_date),
+    year                  = year(first_occurrence_date)
+  )
+
+star_date <- as.Date("2020-06-01")
+
+star_types <- c(
+  "criminal-trespassing",
+  "disturbing-the-peace",
+  "criminal-mischief-other",
+  "drug-poss-paraphernalia",
+  "drug-methampetamine-possess",
+  "drug-pcs-other-drug",
+  "liquor-possession",
+  "drug-heroin-possess",
+  "drug-cocaine-possess",
+  "drug-opium-or-deriv-possess",
+  "drug-marijuana-possess",
+  "drug-synth-narcotic-possess",
+  "drug-hallucinogen-possess"
+)
+
+treated_nbhds <- c(
+  "cbd", "union-station", "five-points", "civic-center",
+  "capitol-hill", "north-capitol-hill", "cheesman-park", "city-park-west"
+)
+```
+
+## Dataset Overview
+
+The raw dataset contains **`r nrow(crime)`** incident records across
+**`r ncol(crime)`** variables, spanning
+**`r format(min(crime$first_occurrence_date, na.rm = TRUE), "%B %d, %Y")`**
+to
+**`r format(max(crime$first_occurrence_date, na.rm = TRUE), "%B %d, %Y")`**.
+Each row is a single reported incident. The key fields used in this analysis
+are `offense_type_id`, `neighborhood_id`, and `first_occurrence_date`.
+
+## STAR-Targeted Offense Types
+
+The 13 offense types below represent the non-violent substance use,
+trespassing, and public disorder calls that match STAR's documented
+eligibility criteria. These form the dependent variable.
+
+```{r}
+#| label: tbl-star-types
+#| tbl-cap: "STAR-targeted offense types — count and share of all incidents"
+crime |>
+  filter(offense_type_id %in% star_types) |>
+  count(offense_type_id, sort = TRUE) |>
+  mutate(pct = round(100 * n / sum(n), 1)) |>
+  rename(`Offense type` = offense_type_id, Count = n, `Share (%)` = pct) |>
+  knitr::kable()
+```
+
+Total STAR-targeted incidents across all years:
+**`r sum(crime$offense_type_id %in% star_types)`**.
+
+## Top Neighborhoods by STAR-Targeted Offense Count
+
+```{r}
+#| label: tbl-top-nbhds
+#| tbl-cap: "Top 10 neighborhoods by STAR-targeted offense count (2018–2021)"
+crime |>
+  filter(offense_type_id %in% star_types, year %in% 2018:2021) |>
+  count(neighborhood_id, sort = TRUE) |>
+  head(10) |>
+  rename(Neighborhood = neighborhood_id, Count = n) |>
+  knitr::kable()
+```
+
+## Treated Neighborhoods in the Data
+
+The eight pilot neighborhoods are confirmed present in the dataset with the
+following record counts:
+
+```{r}
+#| label: tbl-treated-check
+#| tbl-cap: "Treated neighborhoods: raw incident counts"
+crime |>
+  filter(neighborhood_id %in% treated_nbhds) |>
+  count(neighborhood_id) |>
+  arrange(neighborhood_id) |>
+  rename(Neighborhood = neighborhood_id, `Total incidents` = n) |>
+  knitr::kable()
+```
+
+## Missing-Value Audit
+
+```{r}
+#| label: tbl-missing
+#| tbl-cap: "Missing values by variable"
+crime |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(everything(), names_to = "Variable", values_to = "N missing") |>
+  mutate(`% missing` = round(100 * `N missing` / nrow(crime), 2)) |>
+  arrange(desc(`N missing`)) |>
+  knitr::kable()
+```
+
+## Figure B: STAR-Targeted Offenses Over Time (Raw Data)
+
+```{r}
+#| label: fig-figB
+#| fig-cap: "Monthly STAR-targeted offenses — treated vs. control neighborhoods (raw data). Both lines are per-neighborhood averages."
+#| fig-height: 4.5
+crime |>
+  filter(offense_type_id %in% star_types,
+         first_occurrence_date >= as.POSIXct("2018-01-02"),
+         first_occurrence_date <  as.POSIXct("2021-09-01"),
+         !is.na(neighborhood_id)) |>
+  mutate(
+    year_month = floor_date(first_occurrence_date, "month"),
+    group      = if_else(neighborhood_id %in% treated_nbhds,
+                         "Treated (avg per pilot nbhd)",
+                         "Control (avg per other nbhd)")
+  ) |>
+  count(group, neighborhood_id, year_month) |>
+  group_by(group, year_month) |>
+  summarise(mean_n = mean(n), .groups = "drop") |>
+  ggplot(aes(x = as.Date(year_month), y = mean_n, colour = group)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = star_date, linetype = "dashed", colour = "black") +
+  annotate("text", x = star_date, y = Inf,
+           label = "STAR launch\nJun 2020", hjust = -0.05, vjust = 1.3, size = 3) +
+  scale_colour_manual(values = c("Treated (avg per pilot nbhd)" = "#2166ac",
+                                 "Control (avg per other nbhd)" = "#d73027")) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+  scale_y_continuous(labels = comma) +
+  labs(x = NULL, y = "Avg monthly STAR-targeted incidents per neighborhood",
+       colour = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+\newpage
+
+# Section 2: Sample Construction
+
+## Filter Log
+
+```{r}
+#| label: filter-log
+crime_step1 <- crime |>
+  filter(first_occurrence_date >= as.POSIXct("2018-01-02"),
+         first_occurrence_date <  as.POSIXct("2021-09-01"))
+
+crime_step2 <- crime_step1 |>
+  filter(!is.na(neighborhood_id))
+
+tibble(
+  Step = c("Raw data",
+           "Step 1: Keep Jan 2, 2018 – Aug 31, 2021",
+           "Step 2: Drop missing neighborhood_id"),
+  `Rows remaining` = c(nrow(crime), nrow(crime_step1), nrow(crime_step2)),
+  `Rows removed`   = c(0,
+                       nrow(crime) - nrow(crime_step1),
+                       nrow(crime_step1) - nrow(crime_step2)),
+  `% removed`      = round(c(0,
+                              100 * (nrow(crime) - nrow(crime_step1)) / nrow(crime),
+                              100 * (nrow(crime_step1) - nrow(crime_step2)) / nrow(crime_step1)), 1)
+) |>
+  knitr::kable()
+```
+
+## Panel Construction
+
+Step 1 retains the pilot window (January 2018 – August 2021) and excludes
+the fall 2021 citywide expansion so that control neighborhoods remain
+untreated for the full study period. Step 2 drops the
+`r nrow(crime_step1) - nrow(crime_step2)` rows with a missing
+`neighborhood_id` since treatment assignment is impossible without it.
+Step 3 aggregates individual incidents to a neighborhood × month panel,
+filling in zero-incident months explicitly so the regression sees them
+rather than treating them as missing.
+
+```{r}
+#| label: build-panel
+#| include: false
+crime_clean <- crime_step2 |>
+  mutate(
+    year_month    = floor_date(first_occurrence_date, "month") |> as.Date(),
+    treated       = as.integer(neighborhood_id %in% treated_nbhds),
+    post_star     = as.integer(year_month >= star_date),
+    did_term      = treated * post_star,
+    star_targeted = as.integer(offense_type_id %in% star_types)
+  )
+
+analysis_panel <- crime_clean |>
+  filter(star_targeted == 1) |>
+  count(neighborhood_id, treated, year_month, name = "incidents") |>
+  complete(
+    neighborhood_id,
+    year_month = seq(min(year_month), max(year_month), by = "month"),
+    fill = list(incidents = 0)
+  ) |>
+  mutate(treated   = as.integer(neighborhood_id %in% treated_nbhds),
+         post_star = as.integer(year_month >= star_date),
+         did_term  = treated * post_star)
+```
+
+The final panel has **`r nrow(analysis_panel)`** cells
+(**`r n_distinct(analysis_panel$neighborhood_id)`** neighborhoods ×
+**`r n_distinct(analysis_panel$year_month)`** months), covering
+**`r n_distinct(analysis_panel$neighborhood_id[analysis_panel$treated==1])`**
+treated and
+**`r n_distinct(analysis_panel$neighborhood_id[analysis_panel$treated==0])`**
+control neighborhoods.
+
+## Panel Summary Statistics
+
+```{r}
+#| label: tbl-panel-summary
+#| tbl-cap: "Panel summary statistics by treatment group"
+analysis_panel |>
+  group_by(treated) |>
+  summarise(
+    `Neighborhoods`      = n_distinct(neighborhood_id),
+    `Panel cells`        = n(),
+    `Mean incidents`     = round(mean(incidents), 2),
+    `SD incidents`       = round(sd(incidents), 2),
+    `Min`                = min(incidents),
+    `Max`                = max(incidents),
+    `% zero-incident months` = round(100 * mean(incidents == 0), 1),
+    .groups = "drop"
+  ) |>
+  mutate(treated = if_else(treated == 1, "Treated", "Control")) |>
+  rename(Group = treated) |>
+  knitr::kable()
+```
+
+## Baseline Comparability
+
+DID requires parallel *trends*, not equal baseline *levels*. The table below
+documents the pre-STAR level difference so readers can assess whether trend
+parallelism is plausible. This difference motivates Robustness Check 4
+(alternative control group restricted to high-volume neighborhoods).
+
+```{r}
+#| label: tbl-baseline
+#| tbl-cap: "Baseline comparability — pre-STAR period (Jan 2018 – May 2020)"
+analysis_panel |>
+  filter(post_star == 0) |>
+  group_by(treated) |>
+  summarise(
+    `Neighborhoods`  = n_distinct(neighborhood_id),
+    `Mean incidents` = round(mean(incidents), 2),
+    `Median`         = round(median(incidents), 2),
+    `SD`             = round(sd(incidents), 2),
+    .groups = "drop"
+  ) |>
+  mutate(Group = if_else(treated == 1, "Treated (8 pilot nbhds)",
+                                       "Control (other nbhds)")) |>
+  select(Group, everything(), -treated) |>
+  knitr::kable()
+```
+
+\newpage
+
+# Section 3: Analysis
+
+## Identification Strategy
+
+This analysis uses **difference-in-differences (DID)**. The key assumption
+is **parallel trends**: absent STAR, STAR-targeted incidents in the 8 pilot
+neighborhoods would have followed the same monthly trend as the control
+neighborhoods. Neighborhood fixed effects absorb permanent cross-neighborhood
+level differences (downtown neighborhoods always have higher crime volumes).
+Month fixed effects absorb city-wide shocks common to all neighborhoods
+(COVID-19, seasonality). The interaction term `treated × post-STAR` isolates
+the pilot neighborhoods' deviation from the common trend after June 2020 —
+the causal estimate of STAR's effect.
+
+## Figure 1: Main Parallel-Trends Plot
+
+```{r}
+#| label: fig-1
+#| fig-cap: "Monthly STAR-targeted offenses — 8 treated neighborhoods vs. control average. Both lines are per-neighborhood averages so the comparison is on equal footing."
+#| fig-height: 4.5
+analysis_panel |>
+  group_by(treated, year_month) |>
+  summarise(mean_inc = mean(incidents), .groups = "drop") |>
+  mutate(Group = if_else(treated == 1,
+                         "Treated (avg per pilot nbhd)",
+                         "Control (avg per other nbhd)")) |>
+  ggplot(aes(x = as.Date(year_month), y = mean_inc, colour = Group)) +
+  geom_line(linewidth = 1.1) +
+  geom_vline(xintercept = star_date, linetype = "dashed", colour = "black") +
+  annotate("text", x = star_date, y = Inf,
+           label = "STAR launch\nJun 2020", hjust = -0.05, vjust = 1.3, size = 3) +
+  scale_colour_manual(values = c("Treated (avg per pilot nbhd)" = "#2166ac",
+                                 "Control (avg per other nbhd)" = "#d73027")) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+  scale_y_continuous(labels = comma) +
+  labs(x = NULL, y = "Avg monthly STAR-targeted incidents per neighborhood",
+       colour = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Figure 2: Per-Neighborhood Facets
+
+```{r}
+#| label: fig-2
+#| fig-cap: "STAR-targeted offenses per treated neighborhood, 2018–2021. Free y-axis per panel. Checks whether the post-STAR drop appears across all 8 neighborhoods or is driven by a subset."
+#| fig-height: 5
+analysis_panel |>
+  filter(treated == 1) |>
+  ggplot(aes(x = as.Date(year_month), y = incidents)) +
+  geom_line(linewidth = 0.7, colour = "#2166ac") +
+  geom_vline(xintercept = star_date, linetype = "dashed", colour = "black") +
+  facet_wrap(~ neighborhood_id, scales = "free_y", ncol = 4) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(labels = comma) +
+  labs(x = NULL, y = "Monthly incidents") +
+  theme_minimal(base_size = 9) +
+  theme(axis.text.x  = element_text(angle = 45, hjust = 1),
+        strip.text   = element_text(size = 8, face = "bold"))
+```
+
+## Main DID Regression
+
+```{r}
+#| label: did-regression
+#| include: false
+did_mod    <- lm(incidents ~ factor(neighborhood_id) + factor(year_month) + did_term,
+                 data = analysis_panel)
+did_result <- tidy(did_mod, conf.int = TRUE) |> filter(term == "did_term")
+```
+
+```{r}
+#| label: tbl-did-results
+#| tbl-cap: "Main DID regression results"
+did_result |>
+  select(Estimate = estimate, `Std. Error` = std.error,
+         `t-stat` = statistic, `p-value` = p.value,
+         `95% CI lower` = conf.low, `95% CI upper` = conf.high) |>
+  mutate(across(everything(), \(x) round(x, 3))) |>
+  knitr::kable()
+```
+
+The model has **`r nobs(did_mod)`** observations and an R² of
+**`r round(summary(did_mod)$r.squared, 3)`**.
+
+## Figure 3: DID Coefficient Plot
+
+```{r}
+#| label: fig-3
+#| fig-cap: "DID estimate with 95% confidence interval. A negative estimate means treated neighborhoods saw a larger decline in STAR-targeted incidents than the control trend would predict."
+#| fig-height: 3.5
+#| fig-width: 4
+ggplot(did_result,
+       aes(x = "DID estimate", y = estimate, ymin = conf.low, ymax = conf.high)) +
+  geom_pointrange(size = 1, colour = "#2166ac") +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_y_continuous(labels = comma) +
+  labs(x = NULL,
+       y = "Differential monthly STAR-targeted incidents\n(treated vs. control)") +
+  theme_minimal(base_size = 11)
+```
+
+## Figure 4: Event-Study Plot
+
+```{r}
+#| label: fig-4
+#| fig-cap: "Event-study plot. Each point is the treated-minus-control average gap for that month, normalised so May 2020 (month −1) = 0. A flat pre-period line supports parallel trends. Band = ±2 SD of pre-treatment variation."
+#| fig-height: 4.5
+event_gaps <- analysis_panel |>
+  group_by(treated, year_month) |>
+  summarise(mean_inc = mean(incidents), .groups = "drop") |>
+  pivot_wider(names_from = treated, values_from = mean_inc, names_prefix = "g") |>
+  rename(treated_avg = g1, control_avg = g0) |>
+  mutate(
+    months_to_star = 12L * (year(year_month) - 2020L) + (month(year_month) - 6L),
+    gap            = treated_avg - control_avg
+  )
+
+ref_gap    <- event_gaps$gap[event_gaps$months_to_star == -1]
+event_gaps <- event_gaps |> mutate(norm_gap = gap - ref_gap)
+pre_sd     <- sd(event_gaps$norm_gap[event_gaps$months_to_star < 0])
+
+ggplot(event_gaps, aes(x = months_to_star, y = norm_gap)) +
+  annotate("rect", xmin = min(event_gaps$months_to_star), xmax = 0,
+           ymin = -Inf, ymax = Inf, fill = "grey90", alpha = 0.5) +
+  geom_ribbon(aes(ymin = norm_gap - 2 * pre_sd, ymax = norm_gap + 2 * pre_sd),
+              alpha = 0.15, fill = "#2166ac") +
+  geom_line(colour = "#2166ac", linewidth = 0.9) +
+  geom_point(colour = "#2166ac", size = 1.8) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "black") +
+  annotate("text", x = 0,   y = Inf, label = "STAR launch",
+           hjust = -0.05, vjust = 1.3, size = 3) +
+  annotate("text", x = -14, y = Inf, label = "Pre-treatment\n(shaded)",
+           hjust = 0.5, vjust = 1.3, size = 3, colour = "grey40") +
+  scale_y_continuous(labels = comma) +
+  labs(x = "Months relative to STAR launch  (0 = June 2020)",
+       y = "Normalised gap (treated avg − control avg)") +
+  theme_minimal(base_size = 11)
+```
+
+## Robustness Checks
+
+### Check 1: Pre-Treatment Parallel Trends
+
+```{r}
+#| label: fig-rob1
+#| fig-cap: "Pre-treatment parallel trends (Jan 2018 – May 2020). Lines should move in parallel; a common slope supports the DID parallel-trends assumption."
+#| fig-height: 3.5
+analysis_panel |>
+  filter(year_month < star_date) |>
+  group_by(treated, year_month) |>
+  summarise(mean_inc = mean(incidents), .groups = "drop") |>
+  mutate(Group = if_else(treated == 1, "Treated (avg)", "Control (avg)")) |>
+  ggplot(aes(x = as.Date(year_month), y = mean_inc, colour = Group, group = Group)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.5) +
+  scale_colour_manual(values = c("Treated (avg)" = "#2166ac",
+                                 "Control (avg)" = "#d73027")) +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+  scale_y_continuous(labels = comma) +
+  labs(x = NULL, y = "Avg monthly STAR-targeted incidents per nbhd", colour = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Check 2: Placebo Test (Fake Treatment = June 2019)
+
+If the pre-period trends are truly parallel, running the same DID with a
+fake treatment date one year before the actual launch should produce an
+insignificant estimate.
+
+```{r}
+#| label: placebo
+#| include: false
+placebo_panel <- crime_clean |>
+  filter(star_targeted == 1, year_month < star_date) |>
+  mutate(post_placebo = as.integer(year_month >= as.Date("2019-06-01")),
+         did_placebo  = treated * post_placebo) |>
+  count(neighborhood_id, treated, post_placebo, did_placebo, year_month,
+        name = "incidents") |>
+  complete(neighborhood_id,
+           year_month = seq(min(year_month), max(year_month), by = "month"),
+           fill = list(incidents = 0)) |>
+  mutate(treated      = as.integer(neighborhood_id %in% treated_nbhds),
+         post_placebo = as.integer(year_month >= as.Date("2019-06-01")),
+         did_placebo  = treated * post_placebo)
+
+did_mod_placebo <- lm(incidents ~ factor(neighborhood_id) + factor(year_month) + did_placebo,
+                      data = placebo_panel)
+rob_placebo <- tidy(did_mod_placebo, conf.int = TRUE) |> filter(term == "did_placebo")
+```
+
+Placebo DID estimate: **`r round(rob_placebo$estimate, 3)`**
+(95% CI: [`r round(rob_placebo$conf.low, 3)`, `r round(rob_placebo$conf.high, 3)`],
+p = `r round(rob_placebo$p.value, 4)`).
+`r if_else(rob_placebo$p.value > 0.05, "Not significant — no pre-existing break detected. Parallel trends assumption supported.", "WARNING: significant — pre-existing trend break detected.")`
+
+### Check 3: Alternative Outcome — All Offenses
+
+Tests whether STAR diverted calls rather than suppressing all crime broadly.
+The effect should be stronger for STAR-targeted offenses than for all
+offenses combined.
+
+```{r}
+#| label: rob-all
+#| include: false
+panel_all <- crime_clean |>
+  count(neighborhood_id, treated, post_star, did_term, year_month, name = "incidents") |>
+  complete(neighborhood_id,
+           year_month = seq(min(year_month), max(year_month), by = "month"),
+           fill = list(incidents = 0)) |>
+  mutate(treated   = as.integer(neighborhood_id %in% treated_nbhds),
+         post_star = as.integer(year_month >= star_date),
+         did_term  = treated * post_star)
+
+did_mod_all <- lm(incidents ~ factor(neighborhood_id) + factor(year_month) + did_term,
+                  data = panel_all)
+rob_all <- tidy(did_mod_all, conf.int = TRUE) |> filter(term == "did_term")
+```
+
+All-offense DID estimate: **`r round(rob_all$estimate, 3)`**
+(95% CI: [`r round(rob_all$conf.low, 3)`, `r round(rob_all$conf.high, 3)`],
+p = `r round(rob_all$p.value, 4)`).
+
+### Check 4: Alternative Control Group — High-Volume Neighborhoods Only
+
+The treated neighborhoods are downtown and high-volume. This check restricts
+the control group to neighborhoods whose pre-STAR average monthly incident
+rate falls in the top quartile, making them more structurally comparable to
+the treated neighborhoods.
+
+```{r}
+#| label: rob-comparable
+#| include: false
+pre_means <- analysis_panel |>
+  filter(post_star == 0) |>
+  group_by(neighborhood_id, treated) |>
+  summarise(pre_mean = mean(incidents), .groups = "drop")
+
+q75 <- quantile(pre_means$pre_mean[pre_means$treated == 0], 0.75)
+
+comparable_controls <- pre_means |>
+  filter(treated == 0, pre_mean >= q75) |>
+  pull(neighborhood_id)
+
+panel_comparable <- analysis_panel |>
+  filter(treated == 1 | neighborhood_id %in% comparable_controls)
+
+did_mod_comparable <- lm(incidents ~ factor(neighborhood_id) + factor(year_month) + did_term,
+                         data = panel_comparable)
+rob_comparable <- tidy(did_mod_comparable, conf.int = TRUE) |> filter(term == "did_term")
+```
+
+Control restricted to **`r length(comparable_controls)`** neighborhoods with
+pre-STAR average ≥ `r round(q75, 1)` incidents/month.
+DID estimate: **`r round(rob_comparable$estimate, 3)`**
+(95% CI: [`r round(rob_comparable$conf.low, 3)`, `r round(rob_comparable$conf.high, 3)`],
+p = `r round(rob_comparable$p.value, 4)`).
+
+## Figure 5: Robustness Summary
+
+```{r}
+#| label: fig-5
+#| fig-cap: "All DID estimates across specifications. Point = estimate; bar = 95% CI; blue = main specification. If the main estimate is robust, all non-placebo specifications should fall on the same side of zero."
+#| fig-height: 3.5
+results_summary <- bind_rows(
+  mutate(did_result,     spec = "Main DID (STAR-targeted offenses)"),
+  mutate(rob_all,        spec = "Alternative outcome: all offenses"),
+  mutate(rob_comparable, spec = "Alternative control: high-volume nbhds"),
+  mutate(rob_placebo,    spec = "Placebo (treatment = Jun 2019)")
+) |>
+  select(spec, estimate, conf.low, conf.high, p.value) |>
+  mutate(across(c(estimate, conf.low, conf.high), \(x) round(x, 3)),
+         p.value = round(p.value, 4))
+
+results_summary |>
+  mutate(spec = fct_rev(factor(spec))) |>
+  ggplot(aes(x = spec, y = estimate, ymin = conf.low, ymax = conf.high,
+             colour = spec == "Main DID (STAR-targeted offenses)")) +
+  geom_pointrange(size = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
+  coord_flip() +
+  scale_colour_manual(values = c("TRUE" = "#2166ac", "FALSE" = "#636363"),
+                      guide = "none") +
+  scale_y_continuous(labels = comma) +
+  labs(x = NULL,
+       y = "Differential monthly STAR-targeted incidents per neighborhood") +
+  theme_minimal(base_size = 11)
+```
+
+\newpage
+
+# Section 4: Managerial Implications
+
+```{r}
+#| label: managerial
+#| include: false
+est              <- did_result$estimate
+n_pilot          <- 8
+months_pilot     <- 15
+n_all_nbhds      <- n_distinct(analysis_panel$neighborhood_id)
+
+monthly_avoided  <- abs(est) * n_pilot
+total_avoided    <- monthly_avoided * months_pilot
+annualized       <- monthly_avoided * 12
+citywide_monthly <- abs(est) * n_all_nbhds
+```
+
+The DID estimate of **`r round(est, 2)`** incidents per neighborhood per
+month means STAR
+`r if_else(est < 0, "reduced", "increased")`
+STAR-targeted incidents in the pilot neighborhoods relative to the control
+trend after launch.
+
+**Quantified impact across the 8 pilot neighborhoods:**
+
+- Monthly incidents avoided: **`r round(monthly_avoided, 1)`**
+- Total avoided over the 15-month pilot (Jun 2020 – Aug 2021):
+  **`r round(total_avoided, 0)`**
+- Projected annualized reduction: **`r round(annualized, 0)`** incidents/year
+
+**Implications for expansion:**
+
+If the per-neighborhood effect holds city-wide, scaling STAR to all
+`r n_all_nbhds` Denver neighborhoods could avoid approximately
+**`r round(citywide_monthly, 0)`** STAR-targeted incidents per month across
+the city. Each avoided incident represents a 911 call handled without police
+dispatch, freeing officer capacity for higher-priority calls.
+
+**Geographic targeting:** Because the pilot neighborhoods are
+disproportionately high-volume, expansion should prioritize other
+high-density districts first. Extending to low-volume residential
+neighborhoods would likely yield a smaller absolute benefit per dollar spent.
+
+**Caveats for decision-makers:**
+
+1. Incident counts reflect *reported* events. STAR may also reduce
+   unreported incidents not captured in this dataset.
+2. The post-period overlaps substantially with COVID-19 (June 2020 onward),
+   which independently suppressed crime city-wide. Month fixed effects absorb
+   this common shock, but the 15-month post-period is short and results
+   should be interpreted with appropriate caution.
+3. A full cost-effectiveness analysis would require STAR's per-dispatch cost
+   compared to average police-response cost — data not available in the
+   crime incident dataset used here.
