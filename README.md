@@ -111,6 +111,6 @@ denver-star-did/
 
 ## Author
 
-**Nhi Nguyen** · Business Economics, UC San Diego (2026)
+**Nhi Nguyen, Arushi Gupta, Nathalie Maldonado** · Business Economics, UC San Diego (2026)
 
 [LinkedIn](https://www.linkedin.com/in/nhi-nguyen-a14951262/) · [Portfolio](https://haileydo.notion.site/Business-Analyst-Portfolio-1c3764a15e8e80099893f050d7744a85)
