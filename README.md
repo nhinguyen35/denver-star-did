@@ -61,22 +61,32 @@ Standard errors are clustered at the neighborhood level to account for serial co
 ## Visualizations
 
 **Figure 1 — Main parallel trends plot.** Monthly STAR-targeted offenses per neighborhood, treated vs. control average. Treated neighborhoods fall sharply at STAR's June 2020 launch and stay below pre-launch levels.
+![Figure 1 — Parallel trends](figure1-parallel-trends.png)
 
 **Figure 2 — Per-neighborhood facets.** All 8 pilot neighborhoods show a visible post-STAR drop, ruling out a single outlier driving the aggregate result. The sharpest declines are in cbd, civic-center, and five-points.
+![Figure 2 — Per-neighborhood facets](figure2-per-neighborhood-facets.png)
 
 **Figure 3 — DiD coefficient plot.** Point estimate (−17.87) with 95% confidence interval, clearly below zero.
+![Figure 3 — DiD coefficient](figure3-did-coefficient.png)
 
 **Figure 4 — Event study.** Treated-minus-control gap by month, normalized to May 2020 = 0. Pre-period fluctuates around zero (supporting parallel trends); post-period gap is persistently negative and sustained.
+![Figure 4 — Event study](figure4-event-study.png)
 
 **Figure 5 — Robustness summary (forest plot).** All 4 specifications plotted side by side. Three non-placebo estimates cluster around −15 to −18 on the same side of zero; the placebo is the only positive estimate.
+![Figure 5 — Robustness summary](figure5-robustness-summary.png)
+
+![Robustness check — Pre-treatment parallel trends](robustness1-pretrends.png)
 
 ## Repository Structure
 
 ```
 denver-star-did/
-├── data/
-│   └── crime.csv              # Denver crime incident data (from Kaggle)
-├── output/                    # Generated figures and results CSV
+├── figure1-parallel-trends.png       # Main parallel-trends plot
+├── figure2-per-neighborhood-facets.png
+├── figure3-did-coefficient.png
+├── figure4-event-study.png
+├── figure5-robustness-summary.png
+├── robustness1-pretrends.png
 ├── star_did_neighborhood.R    # Full analysis script (R)
 ├── star_did_neighborhood.qmd  # Quarto report (rendered PDF)
 └── README.md
